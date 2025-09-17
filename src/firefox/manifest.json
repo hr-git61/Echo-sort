@@ -1,0 +1,32 @@
+{
+    "manifest_version": 2,
+    "name": "Manaba Smart Downloader",
+    "version": "0.3.0",
+    "description": "manaba のページDOM(#coursename)から科目名を取得し manaba/<科目名>/ に保存します。",
+    "permissions": [
+        "downloads",
+        "*://manaba.tsukuba.ac.jp/*"
+    ],
+    "background": {
+        "scripts": [
+            "background.js"
+        ]
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "*://manaba.tsukuba.ac.jp/*"
+            ],
+            "js": [
+                "content.js"
+            ],
+            "run_at": "document_idle"
+        }
+    ],
+    "applications": {
+        "gecko": {
+            "id": "manaba-smart-downloader@example.com",
+            "strict_min_version": "109.0"
+        }
+    }
+}
