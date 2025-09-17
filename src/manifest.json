@@ -1,0 +1,27 @@
+{
+    "manifest_version": 3,
+    "name": "Echo sort",
+    "version": "0.2.0",
+    "description": "manaba のページDOM(#coursename)から科目名を取得し、manaba/<科目名>/ に保存します。",
+    "permissions": [
+        "downloads",
+        "storage"
+    ],
+    "host_permissions": [
+        "https://manaba.tsukuba.ac.jp/*"
+    ],
+    "background": {
+        "service_worker": "sw.js"
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "https://manaba.tsukuba.ac.jp/*"
+            ],
+            "js": [
+                "content.js"
+            ],
+            "run_at": "document_idle"
+        }
+    ]
+}
