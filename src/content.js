@@ -1,9 +1,10 @@
-// == Echo sort (File System Access API版 / 設定・トースト対応) ============
+// == Echo sort (File System Access API版 / 設定・トースト・日本語名デコード対応) ==
 // 保存先: <ベース>/<科目名>/<元ファイル名>
-// - ベースはコンテンツスクリプト側で showDirectoryPicker により取得（IDBへ保存）
-// - 新規科目ディレクトリの作成時、設定に応じて confirm を表示
-// - 保存成功時に数秒間のトースト通知
-// - オプションページと tabs メッセージで連携（ベース選択/状態照会/クリア）
+// - ベースは showDirectoryPicker() で取得（IDB に永続化）
+// - 新規科目ディレクトリ作成時は設定により confirm
+// - 保存成功時はトースト通知
+// - オプションページとメッセージ連携（選択/照会/クリア）
+// - 日本語名: Content-Disposition の filename* / filename および URL 末尾をデコード
 // =======================================================================
 
 "use strict";
@@ -49,22 +50,80 @@ function looksLikeFileLink(a) {
   return false;
 }
 
-function getFilenameFromContentDisposition(cd) {
-  if (!cd) return null;
-  const fnStar = cd.match(/filename\*\s*=\s*([^;]+)/i);
-  if (fnStar) {
-    let v = fnStar[1].trim();
+/* ==========================
+ * 日本語名デコード関連
+ * ========================== */
+
+/** 安全な decodeURIComponent（壊れた%エンコードでも落ちない） */
+function safeDecodeURIComponent(s) {
+  try { return decodeURIComponent(s); } catch { return s; }
+}
+
+/** RFC 2047 (= ? charset ? B|Q ? ... ? =) の 1 トークンをデコード */
+function decodeRFC2047Token(token) {
+  const m = token.match(/^=\?([^?]+)\?([bBqQ])\?([^?]+)\?=$/);
+  if (!m) return token;
+  const [, charsetRaw, encRaw, data] = m;
+  const enc = encRaw.toUpperCase();
+  const charset = (charsetRaw || "utf-8").toLowerCase();
+
+  try {
+    let bytes;
+    if (enc === "B") {
+      const bin = atob(data.replace(/\s+/g, ""));
+      bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    } else {
+      // Q-encoding
+      let s = data.replace(/_/g, " ");
+      s = s.replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+      bytes = new Uint8Array(s.length);
+      for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i);
+    }
+    try {
+      return new TextDecoder(charset).decode(bytes);
+    } catch {
+      return new TextDecoder("utf-8").decode(bytes);
+    }
+  } catch {
+    return token;
+  }
+}
+
+/** 文中の RFC2047 エンコード語を全展開 */
+function decodeRFC2047(s) {
+  return s.replace(/=\?[^?]+\?[bBqQ]\?[^?]+\?=/g, (t) => decodeRFC2047Token(t));
+}
+
+/** Content-Disposition から filename を抽出し、可能な限りデコードして返す */
+function getFilenameFromContentDisposition(contentDisposition) {
+  if (!contentDisposition) return null;
+  const cd = contentDisposition;
+
+  // 1) filename* (RFC 5987) 例: filename*=UTF-8''%E3%81%82.pdf
+  const star = cd.match(/filename\*\s*=\s*([^;]+)/i);
+  if (star) {
+    let v = star[1].trim();
     if (v.startsWith('"') && v.endsWith('"')) v = v.slice(1, -1);
-    const star = v.split("''");
-    if (star.length === 2) { try { return decodeURIComponent(star[1]); } catch { } }
+    const parts = v.split("''"); // ["UTF-8","%E3%81%82.pdf"]
+    if (parts.length === 2) {
+      const encoded = parts[1];
+      return safeDecodeURIComponent(encoded);
+    }
+    if (/%[0-9A-Fa-f]{2}/.test(v)) return safeDecodeURIComponent(v);
     return v;
   }
-  const fn = cd.match(/filename\s*=\s*([^;]+)/i);
-  if (fn) {
-    let v = fn[1].trim();
+
+  // 2) filename= 例: "=?UTF-8?B?...?=" / "report%20日本語.pdf" / "日本語.pdf"
+  const plain = cd.match(/filename\s*=\s*([^;]+)/i);
+  if (plain) {
+    let v = plain[1].trim();
     if (v.startsWith('"') && v.endsWith('"')) v = v.slice(1, -1);
+    if (/=\?[^?]+\?[bBqQ]\?[^?]+\?=/.test(v)) v = decodeRFC2047(v);
+    if (/%[0-9A-Fa-f]{2}/.test(v)) v = safeDecodeURIComponent(v);
     return v;
   }
+
   return null;
 }
 
@@ -157,6 +216,7 @@ async function getCurrentBaseDirOrNull() {
   } catch { return null; }
 }
 
+/** 未設定/権限なし/強制再選択時はピッカーを開く */
 async function prepareBaseDir({ forceRechoose = false } = {}) {
   if (!forceRechoose) {
     const cur = await getCurrentBaseDirOrNull();
@@ -180,6 +240,7 @@ async function prepareBaseDir({ forceRechoose = false } = {}) {
   return handle;
 }
 
+/** 科目ディレクトリ: 存在しない場合のみ設定に応じて confirm */
 async function ensureCourseDirWithPolicy(baseDir, course, { confirmOnCreate }) {
   try {
     const exists = await baseDir.getDirectoryHandle(course, { create: false });
@@ -241,15 +302,28 @@ function showToast(text, seconds = 4) {
  * 保存処理本体
  * ========================== */
 
+/** 名前の決定と総合デコード: <a download> > CD: filename* / filename > URL末尾 */
 function decideBaseName(a, resp, url) {
+  // <a download="..."> があれば最優先
   const fromAttr = a.getAttribute("download");
-  if (fromAttr) return sanitize(fromAttr);
+  if (fromAttr) {
+    let v = fromAttr;
+    if (/%[0-9A-Fa-f]{2}/.test(v)) v = safeDecodeURIComponent(v);
+    return sanitize(v);
+  }
+
+  // Content-Disposition
   const cd = resp.headers.get("Content-Disposition");
   const fromCD = getFilenameFromContentDisposition(cd);
-  if (fromCD) return sanitize(fromCD);
-  const last = url.pathname.split("/").pop();
-  if (last) return sanitize(last);
-  return "download";
+  if (fromCD) {
+    return sanitize(fromCD);
+  }
+
+  // URL 末尾（%エンコード考慮）
+  const lastRaw = url.pathname.split("/").pop() || "download";
+  const last = /%[0-9A-Fa-f]{2}/.test(lastRaw) ? safeDecodeURIComponent(lastRaw) : lastRaw;
+
+  return sanitize(last);
 }
 
 async function saveLinkOnce(a, { forceRechoose = false } = {}) {
@@ -303,7 +377,7 @@ async function saveLinkOnce(a, { forceRechoose = false } = {}) {
 }
 
 /* ==========================
- * 初期化バナー（任意）
+ * 初期化バナー（未設定時）
  * ========================== */
 
 function showSetupBanner() {
@@ -385,7 +459,7 @@ document.addEventListener("click", async (e) => {
  * オプションページとのメッセージ連携
  * ========================== */
 
-// ガード：MAIN ワールドなど chrome.runtime が無い環境で落ちないように
+// ガード：chrome.runtime が無い環境で落ちないように
 const hasRuntime = (typeof chrome !== "undefined") && chrome.runtime && typeof chrome.runtime.onMessage === "function";
 
 if (hasRuntime) {
