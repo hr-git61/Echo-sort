@@ -14,13 +14,13 @@
  * ========================== */
 
 const DB_NAME = "echo-sort-fsa";
-const STORE = "handles";               // IDB: baseDir ハンドル保存
+const STORE = "handles"; // IDB: baseDir ハンドル保存
 const SETTINGS_KEY = "echoSortSettings"; // chrome.storage.sync: ユーザー設定
 const DEFAULT_SETTINGS = {
   confirmOnCreateCourseDir: true,
-  toastSeconds: 4
+  toastSeconds: 4,
 };
-
+let b = false;
 /* ==========================
  * 小物ユーティリティ
  * ========================== */
@@ -37,14 +37,18 @@ function getCourseNameFromDOM() {
 }
 
 function getAbsoluteHref(a) {
-  try { return new URL(a.getAttribute("href"), location.href).toString(); }
-  catch { return null; }
+  try {
+    return new URL(a.getAttribute("href"), location.href).toString();
+  } catch {
+    return null;
+  }
 }
 
 function looksLikeFileLink(a) {
   if (a.hasAttribute("download")) return true;
   const href = a.getAttribute("href") || "";
-  const exts = /\.(pdf|zip|docx?|pptx?|xlsx?|csv|png|jpe?g|gif|txt|md|ppt|xls)(\?|#|$)/i;
+  const exts =
+    /\.(pdf|zip|docx?|pptx?|xlsx?|csv|png|jpe?g|gif|txt|md|ppt|xls)(\?|#|$)/i;
   if (exts.test(href)) return true;
   if (/download|attach|file/.test(href)) return true;
   return false;
@@ -56,7 +60,11 @@ function looksLikeFileLink(a) {
 
 /** 安全な decodeURIComponent（壊れた%エンコードでも落ちない） */
 function safeDecodeURIComponent(s) {
-  try { return decodeURIComponent(s); } catch { return s; }
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
 }
 
 /** RFC 2047 (= ? charset ? B|Q ? ... ? =) の 1 トークンをデコード */
@@ -76,7 +84,9 @@ function decodeRFC2047Token(token) {
     } else {
       // Q-encoding
       let s = data.replace(/_/g, " ");
-      s = s.replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+      s = s.replace(/=([0-9A-Fa-f]{2})/g, (_, h) =>
+        String.fromCharCode(parseInt(h, 16))
+      );
       bytes = new Uint8Array(s.length);
       for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i);
     }
@@ -133,15 +143,23 @@ function getFilenameFromContentDisposition(contentDisposition) {
 
 async function loadSettings() {
   // （保険）chrome.storage が無い環境でも落ちないようにする
-  if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.sync) {
+  if (
+    typeof chrome === "undefined" ||
+    !chrome.storage ||
+    !chrome.storage.sync
+  ) {
     return { ...DEFAULT_SETTINGS };
   }
   return new Promise((resolve) => {
     chrome.storage.sync.get({ [SETTINGS_KEY]: DEFAULT_SETTINGS }, (obj) => {
       const s = obj[SETTINGS_KEY] || DEFAULT_SETTINGS;
       resolve({
-        confirmOnCreateCourseDir: s.confirmOnCreateCourseDir ?? DEFAULT_SETTINGS.confirmOnCreateCourseDir,
-        toastSeconds: Number.isFinite(s.toastSeconds) ? s.toastSeconds : DEFAULT_SETTINGS.toastSeconds
+        confirmOnCreateCourseDir:
+          s.confirmOnCreateCourseDir ??
+          DEFAULT_SETTINGS.confirmOnCreateCourseDir,
+        toastSeconds: Number.isFinite(s.toastSeconds)
+          ? s.toastSeconds
+          : DEFAULT_SETTINGS.toastSeconds,
       });
     });
   });
@@ -213,7 +231,9 @@ async function getCurrentBaseDirOrNull() {
     if (!h) return null;
     const ok = await ensureRWPermission(h);
     return ok ? h : null;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 /** 未設定/権限なし/強制再選択時はピッカーを開く */
@@ -236,7 +256,9 @@ async function prepareBaseDir({ forceRechoose = false } = {}) {
     err.code = "PERMISSION_DENIED";
     throw err;
   }
-  try { await saveHandle("baseDir", handle); } catch { }
+  try {
+    await saveHandle("baseDir", handle);
+  } catch {}
   return handle;
 }
 
@@ -245,9 +267,11 @@ async function ensureCourseDirWithPolicy(baseDir, course, { confirmOnCreate }) {
   try {
     const exists = await baseDir.getDirectoryHandle(course, { create: false });
     return exists;
-  } catch { }
-  if (confirmOnCreate) {
-    const ok = window.confirm(`科目ディレクトリを作成します:\n${course}\n\n作成してよろしいですか？`);
+  } catch {}
+  if (b) {
+    const ok = window.confirm(
+      `科目ディレクトリを作成します:\n${course}\n\n作成してよろしいですか？`
+    );
     if (!ok) {
       const err = new Error("course-dir-declined");
       err.code = "COURSE_DIR_DECLINED";
@@ -269,14 +293,12 @@ async function writeResponseToFile(parentDir, fileName, response) {
       await writable.close();
     }
   } catch (e) {
-    try { await writable.abort(); } catch { }
+    try {
+      await writable.abort();
+    } catch {}
     throw e;
   }
 }
-
-/* ==========================
- * トースト通知
- * ========================== */
 
 function showToast(text, seconds = 4) {
   const id = "echo-sort-toast";
@@ -295,7 +317,9 @@ function showToast(text, seconds = 4) {
   box.textContent = text;
   box.style.display = "block";
   const ms = Math.max(1, seconds | 0) * 1000;
-  setTimeout(() => { box.style.display = "none"; }, ms);
+  setTimeout(() => {
+    box.style.display = "none";
+  }, ms);
 }
 
 /* ==========================
@@ -321,7 +345,9 @@ function decideBaseName(a, resp, url) {
 
   // URL 末尾（%エンコード考慮）
   const lastRaw = url.pathname.split("/").pop() || "download";
-  const last = /%[0-9A-Fa-f]{2}/.test(lastRaw) ? safeDecodeURIComponent(lastRaw) : lastRaw;
+  const last = /%[0-9A-Fa-f]{2}/.test(lastRaw)
+    ? safeDecodeURIComponent(lastRaw)
+    : lastRaw;
 
   return sanitize(last);
 }
@@ -357,7 +383,7 @@ async function saveLinkOnce(a, { forceRechoose = false } = {}) {
   // base + course dir
   const baseDir = await prepareBaseDir({ forceRechoose });
   const courseDir = await ensureCourseDirWithPolicy(baseDir, course, {
-    confirmOnCreate: !!settings.confirmOnCreateCourseDir
+    confirmOnCreate: !!settings.confirmOnCreateCourseDir,
   });
 
   // write
@@ -371,7 +397,10 @@ async function saveLinkOnce(a, { forceRechoose = false } = {}) {
   }
 
   // toast
-  showToast(`保存しました: ${course}/${fileName}`, Number(settings.toastSeconds) || 4);
+  showToast(
+    `保存しました: ${course}/${fileName}`,
+    Number(settings.toastSeconds) || 4
+  );
 
   return { kind: "saved", path: `${course}/${fileName}` };
 }
@@ -398,10 +427,14 @@ function showSetupBanner() {
   `;
   document.documentElement.appendChild(bar);
   bar.querySelector("#echo-sort-pick").addEventListener("click", async () => {
-    try { await prepareBaseDir({ forceRechoose: true }); bar.remove(); }
-    catch { }
+    try {
+      await prepareBaseDir({ forceRechoose: true });
+      bar.remove();
+    } catch {}
   });
-  bar.querySelector("#echo-sort-close").addEventListener("click", () => bar.remove());
+  bar
+    .querySelector("#echo-sort-close")
+    .addEventListener("click", () => bar.remove());
 }
 
 (async () => {
@@ -413,54 +446,73 @@ function showSetupBanner() {
  * クリック捕捉
  * ========================== */
 
-document.addEventListener("click", async (e) => {
-  if (document.visibilityState === "hidden") return;
+document.addEventListener(
+  "click",
+  async (e) => {
+    if (document.visibilityState === "hidden") return;
 
-  const a = e.target && e.target.closest && e.target.closest("a[href]");
-  if (!a) return;
+    const a = e.target && e.target.closest && e.target.closest("a[href]");
+    if (!a) return;
 
-  if (!/manaba\.tsukuba\.ac\.jp$/.test(location.host)) return;
+    if (!/manaba\.tsukuba\.ac\.jp$/.test(location.host)) return;
 
-  const isAlt = e.altKey;
-  if (!isAlt && !looksLikeFileLink(a)) return;
+    const isAlt = e.altKey;
+    if (!isAlt && !looksLikeFileLink(a)) return;
 
-  e.preventDefault();
-  e.stopPropagation();
-
-  try {
-    await saveLinkOnce(a, { forceRechoose: isAlt });
-    a.style.outline = "2px solid #4caf50";
-    setTimeout(() => (a.style.outline = ""), 1100);
-  } catch (err1) {
-    if (err1 && (err1.code === "COURSE_DIR_DECLINED" || err1.code === "PICKER_CANCELLED")) return;
-
-    if (err1 && (err1.code === "WRITE_FAILED" || err1.code === "PERMISSION_DENIED")) {
-      try {
-        await saveLinkOnce(a, { forceRechoose: true });
-        a.style.outline = "2px solid #4caf50";
-        setTimeout(() => (a.style.outline = ""), 1100);
-        return;
-      } catch (err2) {
-        console.error("Echo sort save error (retry):", err2.code || err2, err2);
-      }
-    } else {
-      console.error("Echo sort save error:", err1.code || err1, err1);
-    }
+    e.preventDefault();
+    e.stopPropagation();
 
     try {
-      a.style.outline = "2px solid #f44336";
-      setTimeout(() => (a.style.outline = ""), 1400);
-    } catch { }
-    location.href = a.href;
-  }
-}, true);
+      await saveLinkOnce(a, { forceRechoose: isAlt });
+      a.style.outline = "2px solid #4caf50";
+      setTimeout(() => (a.style.outline = ""), 1100);
+    } catch (err1) {
+      if (
+        err1 &&
+        (err1.code === "COURSE_DIR_DECLINED" ||
+          err1.code === "PICKER_CANCELLED")
+      )
+        return;
+
+      if (
+        err1 &&
+        (err1.code === "WRITE_FAILED" || err1.code === "PERMISSION_DENIED")
+      ) {
+        try {
+          await saveLinkOnce(a, { forceRechoose: true });
+          a.style.outline = "2px solid #4caf50";
+          setTimeout(() => (a.style.outline = ""), 1100);
+          return;
+        } catch (err2) {
+          console.error(
+            "Echo sort save error (retry):",
+            err2.code || err2,
+            err2
+          );
+        }
+      } else {
+        console.error("Echo sort save error:", err1.code || err1, err1);
+      }
+
+      try {
+        a.style.outline = "2px solid #f44336";
+        setTimeout(() => (a.style.outline = ""), 1400);
+      } catch {}
+      location.href = a.href;
+    }
+  },
+  true
+);
 
 /* ==========================
  * オプションページとのメッセージ連携
  * ========================== */
 
 // ガード：chrome.runtime が無い環境で落ちないように
-const hasRuntime = (typeof chrome !== "undefined") && chrome.runtime && typeof chrome.runtime.onMessage === "function";
+const hasRuntime =
+  typeof chrome !== "undefined" &&
+  chrome.runtime &&
+  typeof chrome.runtime.onMessage === "function";
 
 if (hasRuntime) {
   chrome.runtime.onMessage.addListener((msg) => {
@@ -471,24 +523,51 @@ if (hasRuntime) {
         try {
           await prepareBaseDir({ forceRechoose: true });
           const h = await getCurrentBaseDirOrNull();
-          chrome.runtime.sendMessage({ type: "BASE_DIR_PICKED", ok: true, name: h?.name || "(unknown)" });
+          chrome.runtime.sendMessage({
+            type: "BASE_DIR_PICKED",
+            ok: true,
+            name: h?.name || "(unknown)",
+          });
         } catch (e) {
-          chrome.runtime.sendMessage({ type: "BASE_DIR_PICKED", ok: false, error: e?.code || String(e) });
+          chrome.runtime.sendMessage({
+            type: "BASE_DIR_PICKED",
+            ok: false,
+            error: e?.code || String(e),
+          });
         }
         return;
       }
 
       if (msg.type === "GET_BASE_DIR_STATUS") {
         const h = await getCurrentBaseDirOrNull();
-        chrome.runtime.sendMessage({ type: "BASE_DIR_STATUS", has: !!h, name: h?.name || "" });
+        chrome.runtime.sendMessage({
+          type: "BASE_DIR_STATUS",
+          has: !!h,
+          name: h?.name || "",
+        });
         return;
       }
 
       if (msg.type === "CLEAR_BASE_DIR") {
-        try { await deleteHandle("baseDir"); chrome.runtime.sendMessage({ type: "BASE_DIR_CLEARED", ok: true }); }
-        catch (e) { chrome.runtime.sendMessage({ type: "BASE_DIR_CLEARED", ok: false, error: String(e) }); }
+        try {
+          await deleteHandle("baseDir");
+          chrome.runtime.sendMessage({ type: "BASE_DIR_CLEARED", ok: true });
+        } catch (e) {
+          chrome.runtime.sendMessage({
+            type: "BASE_DIR_CLEARED",
+            ok: false,
+            error: String(e),
+          });
+        }
         return;
       }
     })();
   });
 }
+const input = document.createElement("input");
+input.type = "checkbox";
+document.body.insertAdjacentElement("afterbegin", input);
+input.addEventListener('change', () => {
+b = input.checked;
+console.log(b);
+});
