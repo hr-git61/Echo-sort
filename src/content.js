@@ -1,9 +1,8 @@
-// == Echo sort (File System Access API版 / 明瞭版) =======================
-// クリックと同時に manaba/<科目名>/<元ファイル名> へ直接保存する。
+// == Echo sort (File System Access API版 / 科目ディレクトリ確認付き) ======
+// クリックで manaba/<科目名>/<元ファイル名> に直接保存。
 // - MAIN ワールドで動作（FSA/IndexedDB をページオリジンで利用）
-// - 初回は初期化バナーで「保存先を選ぶ」を提示
-// - Alt+クリックで保存先を再選択
-// - 失敗時は一度だけ再選択してリトライ、ダメなら遷移フォールバック
+// - 保存先未設定なら初期化バナーで案内 / Alt+クリックで再選択
+// - ★ 科目ディレクトリ manaba/<科目名> が無ければ confirm で作成可否を確認
 // =======================================================================
 
 "use strict";
@@ -115,19 +114,34 @@ async function ensureRWPermission(handle) {
   return r === "granted";
 }
 
-async function ensureDir(dirHandle, parts) {
-  let cur = dirHandle;
-  for (const p of parts) {
-    cur = await cur.getDirectoryHandle(p, { create: true });
+/** manaba 直下と科目ディレクトリを用意。科目ディレクトリが無ければ confirm で作成可否を尋ねる。 */
+async function ensureRootAndCourseDirWithConfirm(baseDir, course, { askConfirm = true } = {}) {
+  // manaba 直下は静かに作成（存在しなければ）
+  const root = await baseDir.getDirectoryHandle(ROOT_DIR, { create: true });
+
+  // 既存チェック
+  try {
+    const courseDir = await root.getDirectoryHandle(course, { create: false });
+    return courseDir; // 既存 → 確認不要
+  } catch (e) {
+    // NotFound → 新規作成の可否を確認
+    if (askConfirm) {
+      const ok = window.confirm(
+        `科目ディレクトリを作成します:\n${ROOT_DIR}/${course}\n\n作成してよろしいですか？`
+      );
+      if (!ok) {
+        const err = new Error("course-dir-declined");
+        err.code = "COURSE_DIR_DECLINED";
+        throw err;
+      }
+    }
+    // 同意あり → 作成
+    return await root.getDirectoryHandle(course, { create: true });
   }
-  return cur;
 }
 
-async function writeResponseToFile(dirHandle, relPath, response) {
-  const parts = relPath.split("/").filter(Boolean);
-  const fileName = parts.pop();
-  const parent = await ensureDir(dirHandle, parts);
-  const fileHandle = await parent.getFileHandle(fileName, { create: true });
+async function writeBlobToFile(parentDir, fileName, response) {
+  const fileHandle = await parentDir.getFileHandle(fileName, { create: true });
   const writable = await fileHandle.createWritable();
   try {
     if (response.body && typeof response.body.pipeTo === "function") {
@@ -186,14 +200,11 @@ async function prepareBaseDir({ forceRechoose = false } = {}) {
 function decideBaseName(a, resp, url) {
   const fromAttr = a.getAttribute("download");
   if (fromAttr) return sanitize(fromAttr);
-
   const cd = resp.headers.get("Content-Disposition");
   const fromCD = getFilenameFromContentDisposition(cd);
   if (fromCD) return sanitize(fromCD);
-
   const last = url.pathname.split("/").pop();
   if (last) return sanitize(last);
-
   return "download";
 }
 
@@ -201,6 +212,7 @@ async function saveLinkOnce(a, { forceRechoose = false } = {}) {
   const absUrl = getAbsoluteHref(a);
   if (!absUrl) return { kind: "skip", reason: "no-abs-url" };
 
+  // 1) fetch
   let resp;
   try {
     resp = await fetch(absUrl, { credentials: "include" });
@@ -217,21 +229,25 @@ async function saveLinkOnce(a, { forceRechoose = false } = {}) {
     throw err;
   }
 
+  // 2) path
   const course = getCourseNameFromDOM();
   const url = new URL(absUrl);
-  const baseName = decideBaseName(a, resp, url);
-  const relPath = `${ROOT_DIR}/${course}/${baseName}`;
+  const fileName = decideBaseName(a, resp, url);
 
+  // 3) baseDir + courseDir (confirm if create)
   const baseDir = await prepareBaseDir({ forceRechoose });
+  const courseDir = await ensureRootAndCourseDirWithConfirm(baseDir, course, { askConfirm: true });
+
+  // 4) write
   try {
-    await writeResponseToFile(baseDir, relPath, resp);
+    await writeBlobToFile(courseDir, fileName, resp);
   } catch (e) {
     const err = new Error("write-failed");
     err.code = "WRITE_FAILED";
     err.cause = e;
     throw err;
   }
-  return { kind: "saved", path: relPath };
+  return { kind: "saved", path: `${ROOT_DIR}/${course}/${fileName}` };
 }
 
 /* ==========================
@@ -260,14 +276,13 @@ function showSetupBanner() {
       await prepareBaseDir({ forceRechoose: true });
       bar.remove();
     } catch (e) {
-      // ユーザキャンセルなどは無視
+      // ユーザキャンセル等は無視
     }
   });
   bar.querySelector("#echo-sort-close").addEventListener("click", () => bar.remove());
 }
 
 (async () => {
-  // 初期化時に保存先が未設定ならバナーを出す
   const cur = await getCurrentBaseDirOrNull();
   if (!cur) showSetupBanner();
 })();
@@ -295,7 +310,10 @@ document.addEventListener("click", async (e) => {
     a.style.outline = "2px solid #4caf50";
     setTimeout(() => (a.style.outline = ""), 1100);
   } catch (err1) {
-    // 書き込み系の失敗は、1回だけ再選択してリトライ
+    // 科目ディレクトリ作成の拒否は静かに中断
+    if (err1 && err1.code === "COURSE_DIR_DECLINED") return;
+
+    // 書き込み/権限は一度だけ再選択してリトライ
     if (err1 && (err1.code === "WRITE_FAILED" || err1.code === "PERMISSION_DENIED")) {
       try {
         await saveLinkOnce(a, { forceRechoose: true });
@@ -308,9 +326,6 @@ document.addEventListener("click", async (e) => {
     } else {
       console.error("Echo sort save error:", err1.code || err1, err1);
     }
-
-    // ユーザ操作（キャンセル）は静かに中断
-    if (err1 && (err1.code === "PICKER_CANCELLED")) return;
 
     // 最後にフォールバック遷移
     try {

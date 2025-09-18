@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
     "name": "Echo sort (FSA)",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "description": "manaba のファイルリンクを File System Access API で manaba/<科目名>/<元ファイル名> に自動保存します。",
     "permissions": [
         "storage"
