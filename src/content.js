@@ -1,19 +1,28 @@
-// == Echo sort (File System Access API版 / 科目ディレクトリ確認付き) ======
-// クリックで manaba/<科目名>/<元ファイル名> に直接保存。
-// - MAIN ワールドで動作（FSA/IndexedDB をページオリジンで利用）
-// - 保存先未設定なら初期化バナーで案内 / Alt+クリックで再選択
-// - ★ 科目ディレクトリ manaba/<科目名> が無ければ confirm で作成可否を確認
+// == Echo sort (File System Access API版 / 設定・トースト対応) ============
+// 保存先: <ベース>/<科目名>/<元ファイル名>
+// - ベースはコンテンツスクリプト側で showDirectoryPicker により取得（IDBへ保存）
+// - 新規科目ディレクトリの作成時、設定に応じて confirm を表示
+// - 保存成功時に数秒間のトースト通知
+// - オプションページと tabs メッセージで連携（ベース選択/状態照会/クリア）
 // =======================================================================
 
 "use strict";
 
 /* ==========================
- * 定数・ユーティリティ
+ * 定数・デフォルト設定
  * ========================== */
 
-const ROOT_DIR = "manaba";
 const DB_NAME = "echo-sort-fsa";
-const STORE = "handles";
+const STORE = "handles";               // IDB: baseDir ハンドル保存
+const SETTINGS_KEY = "echoSortSettings"; // chrome.storage.sync: ユーザー設定
+const DEFAULT_SETTINGS = {
+  confirmOnCreateCourseDir: true,
+  toastSeconds: 4
+};
+
+/* ==========================
+ * 小物ユーティリティ
+ * ========================== */
 
 function sanitize(str, fallback = "Unknown") {
   const s = (str || "").trim().replace(/[\\/:*?"<>|]/g, "_");
@@ -27,11 +36,8 @@ function getCourseNameFromDOM() {
 }
 
 function getAbsoluteHref(a) {
-  try {
-    return new URL(a.getAttribute("href"), location.href).toString();
-  } catch {
-    return null;
-  }
+  try { return new URL(a.getAttribute("href"), location.href).toString(); }
+  catch { return null; }
 }
 
 function looksLikeFileLink(a) {
@@ -50,9 +56,7 @@ function getFilenameFromContentDisposition(cd) {
     let v = fnStar[1].trim();
     if (v.startsWith('"') && v.endsWith('"')) v = v.slice(1, -1);
     const star = v.split("''");
-    if (star.length === 2) {
-      try { return decodeURIComponent(star[1]); } catch { }
-    }
+    if (star.length === 2) { try { return decodeURIComponent(star[1]); } catch { } }
     return v;
   }
   const fn = cd.match(/filename\s*=\s*([^;]+)/i);
@@ -65,7 +69,27 @@ function getFilenameFromContentDisposition(cd) {
 }
 
 /* ==========================
- * IndexedDB（フォルダハンドルの永続化）
+ * chrome.storage: 設定
+ * ========================== */
+
+async function loadSettings() {
+  // （保険）chrome.storage が無い環境でも落ちないようにする
+  if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.sync) {
+    return { ...DEFAULT_SETTINGS };
+  }
+  return new Promise((resolve) => {
+    chrome.storage.sync.get({ [SETTINGS_KEY]: DEFAULT_SETTINGS }, (obj) => {
+      const s = obj[SETTINGS_KEY] || DEFAULT_SETTINGS;
+      resolve({
+        confirmOnCreateCourseDir: s.confirmOnCreateCourseDir ?? DEFAULT_SETTINGS.confirmOnCreateCourseDir,
+        toastSeconds: Number.isFinite(s.toastSeconds) ? s.toastSeconds : DEFAULT_SETTINGS.toastSeconds
+      });
+    });
+  });
+}
+
+/* ==========================
+ * IDB: baseDir ハンドル
  * ========================== */
 
 let dbPromise = null;
@@ -103,6 +127,16 @@ async function loadHandle(key) {
   });
 }
 
+async function deleteHandle(key) {
+  const db = await openDB();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).delete(key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 /* ==========================
  * FSA: 権限 / ディレクトリ / 書き込み
  * ========================== */
@@ -114,62 +148,15 @@ async function ensureRWPermission(handle) {
   return r === "granted";
 }
 
-/** manaba 直下と科目ディレクトリを用意。科目ディレクトリが無ければ confirm で作成可否を尋ねる。 */
-async function ensureRootAndCourseDirWithConfirm(baseDir, course, { askConfirm = true } = {}) {
-  // manaba 直下は静かに作成（存在しなければ）
-  const root = await baseDir.getDirectoryHandle(ROOT_DIR, { create: true });
-
-  // 既存チェック
-  try {
-    const courseDir = await root.getDirectoryHandle(course, { create: false });
-    return courseDir; // 既存 → 確認不要
-  } catch (e) {
-    // NotFound → 新規作成の可否を確認
-    if (askConfirm) {
-      const ok = window.confirm(
-        `科目ディレクトリを作成します:\n${ROOT_DIR}/${course}\n\n作成してよろしいですか？`
-      );
-      if (!ok) {
-        const err = new Error("course-dir-declined");
-        err.code = "COURSE_DIR_DECLINED";
-        throw err;
-      }
-    }
-    // 同意あり → 作成
-    return await root.getDirectoryHandle(course, { create: true });
-  }
-}
-
-async function writeBlobToFile(parentDir, fileName, response) {
-  const fileHandle = await parentDir.getFileHandle(fileName, { create: true });
-  const writable = await fileHandle.createWritable();
-  try {
-    if (response.body && typeof response.body.pipeTo === "function") {
-      await response.body.pipeTo(writable);
-    } else {
-      const blob = await response.blob();
-      await writable.write(blob);
-      await writable.close();
-    }
-  } catch (e) {
-    try { await writable.abort(); } catch { }
-    throw e;
-  }
-}
-
-/** 現在のベースディレクトリを取得（権限がなければ null） */
 async function getCurrentBaseDirOrNull() {
   try {
     const h = await loadHandle("baseDir");
     if (!h) return null;
     const ok = await ensureRWPermission(h);
     return ok ? h : null;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
-/** 保存先を準備：未設定/権限なし/強制再選択時はピッカーを開く */
 async function prepareBaseDir({ forceRechoose = false } = {}) {
   if (!forceRechoose) {
     const cur = await getCurrentBaseDirOrNull();
@@ -193,6 +180,63 @@ async function prepareBaseDir({ forceRechoose = false } = {}) {
   return handle;
 }
 
+async function ensureCourseDirWithPolicy(baseDir, course, { confirmOnCreate }) {
+  try {
+    const exists = await baseDir.getDirectoryHandle(course, { create: false });
+    return exists;
+  } catch { }
+  if (confirmOnCreate) {
+    const ok = window.confirm(`科目ディレクトリを作成します:\n${course}\n\n作成してよろしいですか？`);
+    if (!ok) {
+      const err = new Error("course-dir-declined");
+      err.code = "COURSE_DIR_DECLINED";
+      throw err;
+    }
+  }
+  return await baseDir.getDirectoryHandle(course, { create: true });
+}
+
+async function writeResponseToFile(parentDir, fileName, response) {
+  const fileHandle = await parentDir.getFileHandle(fileName, { create: true });
+  const writable = await fileHandle.createWritable();
+  try {
+    if (response.body && typeof response.body.pipeTo === "function") {
+      await response.body.pipeTo(writable);
+    } else {
+      const blob = await response.blob();
+      await writable.write(blob);
+      await writable.close();
+    }
+  } catch (e) {
+    try { await writable.abort(); } catch { }
+    throw e;
+  }
+}
+
+/* ==========================
+ * トースト通知
+ * ========================== */
+
+function showToast(text, seconds = 4) {
+  const id = "echo-sort-toast";
+  let box = document.getElementById(id);
+  if (!box) {
+    box = document.createElement("div");
+    box.id = id;
+    box.style.cssText = `
+      position: fixed; right: 16px; bottom: 16px; z-index: 2147483647;
+      max-width: 420px; font: 14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
+      color: #222; background: #fff; border: 1px solid #dedede; border-radius: 10px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.12); padding: 10px 12px;
+    `;
+    document.documentElement.appendChild(box);
+  }
+  box.textContent = text;
+  box.style.display = "block";
+  const ms = Math.max(1, seconds | 0) * 1000;
+  setTimeout(() => { box.style.display = "none"; }, ms);
+}
+
 /* ==========================
  * 保存処理本体
  * ========================== */
@@ -212,7 +256,9 @@ async function saveLinkOnce(a, { forceRechoose = false } = {}) {
   const absUrl = getAbsoluteHref(a);
   if (!absUrl) return { kind: "skip", reason: "no-abs-url" };
 
-  // 1) fetch
+  const settings = await loadSettings();
+
+  // fetch
   let resp;
   try {
     resp = await fetch(absUrl, { credentials: "include" });
@@ -229,29 +275,35 @@ async function saveLinkOnce(a, { forceRechoose = false } = {}) {
     throw err;
   }
 
-  // 2) path
+  // path
   const course = getCourseNameFromDOM();
   const url = new URL(absUrl);
   const fileName = decideBaseName(a, resp, url);
 
-  // 3) baseDir + courseDir (confirm if create)
+  // base + course dir
   const baseDir = await prepareBaseDir({ forceRechoose });
-  const courseDir = await ensureRootAndCourseDirWithConfirm(baseDir, course, { askConfirm: true });
+  const courseDir = await ensureCourseDirWithPolicy(baseDir, course, {
+    confirmOnCreate: !!settings.confirmOnCreateCourseDir
+  });
 
-  // 4) write
+  // write
   try {
-    await writeBlobToFile(courseDir, fileName, resp);
+    await writeResponseToFile(courseDir, fileName, resp);
   } catch (e) {
     const err = new Error("write-failed");
     err.code = "WRITE_FAILED";
     err.cause = e;
     throw err;
   }
-  return { kind: "saved", path: `${ROOT_DIR}/${course}/${fileName}` };
+
+  // toast
+  showToast(`保存しました: ${course}/${fileName}`, Number(settings.toastSeconds) || 4);
+
+  return { kind: "saved", path: `${course}/${fileName}` };
 }
 
 /* ==========================
- * 初期化バナー（保存先が未設定のとき表示）
+ * 初期化バナー（任意）
  * ========================== */
 
 function showSetupBanner() {
@@ -272,12 +324,8 @@ function showSetupBanner() {
   `;
   document.documentElement.appendChild(bar);
   bar.querySelector("#echo-sort-pick").addEventListener("click", async () => {
-    try {
-      await prepareBaseDir({ forceRechoose: true });
-      bar.remove();
-    } catch (e) {
-      // ユーザキャンセル等は無視
-    }
+    try { await prepareBaseDir({ forceRechoose: true }); bar.remove(); }
+    catch { }
   });
   bar.querySelector("#echo-sort-close").addEventListener("click", () => bar.remove());
 }
@@ -310,10 +358,8 @@ document.addEventListener("click", async (e) => {
     a.style.outline = "2px solid #4caf50";
     setTimeout(() => (a.style.outline = ""), 1100);
   } catch (err1) {
-    // 科目ディレクトリ作成の拒否は静かに中断
-    if (err1 && err1.code === "COURSE_DIR_DECLINED") return;
+    if (err1 && (err1.code === "COURSE_DIR_DECLINED" || err1.code === "PICKER_CANCELLED")) return;
 
-    // 書き込み/権限は一度だけ再選択してリトライ
     if (err1 && (err1.code === "WRITE_FAILED" || err1.code === "PERMISSION_DENIED")) {
       try {
         await saveLinkOnce(a, { forceRechoose: true });
@@ -327,7 +373,6 @@ document.addEventListener("click", async (e) => {
       console.error("Echo sort save error:", err1.code || err1, err1);
     }
 
-    // 最後にフォールバック遷移
     try {
       a.style.outline = "2px solid #f44336";
       setTimeout(() => (a.style.outline = ""), 1400);
@@ -335,3 +380,41 @@ document.addEventListener("click", async (e) => {
     location.href = a.href;
   }
 }, true);
+
+/* ==========================
+ * オプションページとのメッセージ連携
+ * ========================== */
+
+// ガード：MAIN ワールドなど chrome.runtime が無い環境で落ちないように
+const hasRuntime = (typeof chrome !== "undefined") && chrome.runtime && typeof chrome.runtime.onMessage === "function";
+
+if (hasRuntime) {
+  chrome.runtime.onMessage.addListener((msg) => {
+    (async () => {
+      if (!msg || typeof msg !== "object") return;
+
+      if (msg.type === "PICK_BASE_DIR") {
+        try {
+          await prepareBaseDir({ forceRechoose: true });
+          const h = await getCurrentBaseDirOrNull();
+          chrome.runtime.sendMessage({ type: "BASE_DIR_PICKED", ok: true, name: h?.name || "(unknown)" });
+        } catch (e) {
+          chrome.runtime.sendMessage({ type: "BASE_DIR_PICKED", ok: false, error: e?.code || String(e) });
+        }
+        return;
+      }
+
+      if (msg.type === "GET_BASE_DIR_STATUS") {
+        const h = await getCurrentBaseDirOrNull();
+        chrome.runtime.sendMessage({ type: "BASE_DIR_STATUS", has: !!h, name: h?.name || "" });
+        return;
+      }
+
+      if (msg.type === "CLEAR_BASE_DIR") {
+        try { await deleteHandle("baseDir"); chrome.runtime.sendMessage({ type: "BASE_DIR_CLEARED", ok: true }); }
+        catch (e) { chrome.runtime.sendMessage({ type: "BASE_DIR_CLEARED", ok: false, error: String(e) }); }
+        return;
+      }
+    })();
+  });
+}
