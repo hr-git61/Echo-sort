@@ -1,18 +1,14 @@
 {
     "manifest_version": 3,
-    "name": "Echo sort",
-    "version": "0.2.0",
-    "description": "manaba のページDOM(#coursename)から科目名を取得し、manaba/<科目名>/ に保存します。",
+    "name": "Echo sort (FSA)",
+    "version": "1.1.0",
+    "description": "manaba のファイルリンクを File System Access API で manaba/<科目名>/<元ファイル名> に自動保存します。",
     "permissions": [
-        "downloads",
         "storage"
     ],
     "host_permissions": [
         "https://manaba.tsukuba.ac.jp/*"
     ],
-    "background": {
-        "service_worker": "sw.js"
-    },
     "content_scripts": [
         {
             "matches": [
@@ -21,7 +17,10 @@
             "js": [
                 "content.js"
             ],
-            "run_at": "document_idle"
+            "run_at": "document_idle",
+            "all_frames": true,
+            "world": "MAIN"
         }
-    ]
+    ],
+    "options_page": "options.html"
 }
