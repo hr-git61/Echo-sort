@@ -571,3 +571,33 @@ if (hasRuntime) {
 // b = input.checked;
 // console.log(b);
 // });
+
+//options.htmlリンクのmanabaへの埋め込み
+
+const container = document.getElementById(("mylinks"));
+if (container) {
+  const sep = document.createElement("span");
+  sep.className = "mylinks-sep";
+  sep.textContent = "|";
+
+  const linkWrap = document.createElement("span");
+  const a = document.createElement("a");
+  a.href = "#";
+  a.textContent = "Echo sort";
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  a.style.cursor = "pointer";
+  a.setAttribute("role", "button");
+
+  a.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    chrome.runtime.sendMessage({ type: "OPEN_OPTIONS" });
+  });
+
+  linkWrap.appendChild(a);
+  
+  const ref = container.lastElementChild
+  container.insertBefore(linkWrap, ref);
+  container.insertBefore(sep, ref);
+}
