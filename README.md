@@ -16,6 +16,7 @@
 
 ![エレベーターピッチ](readme_images/elevator_pitch.png)
 
+
 ## ✨ 主な機能 (Features)
 
 * **自動ディレクトリ作成**: `pdf` `image` `document` など、ファイルの種類に応じたフォルダを自動で作成します。
