@@ -268,7 +268,7 @@ async function ensureCourseDirWithPolicy(baseDir, course, { confirmOnCreate }) {
     const exists = await baseDir.getDirectoryHandle(course, { create: false });
     return exists;
   } catch {}
-  if (b) {
+  if (confirmOnCreate) {
     const ok = window.confirm(
       `科目ディレクトリを作成します:\n${course}\n\n作成してよろしいですか？`
     );
@@ -564,10 +564,10 @@ if (hasRuntime) {
     })();
   });
 }
-const input = document.createElement("input");
-input.type = "checkbox";
-document.body.insertAdjacentElement("afterbegin", input);
-input.addEventListener('change', () => {
-b = input.checked;
-console.log(b);
-});
+// const input = document.createElement("input");
+// input.type = "checkbox";
+// document.body.insertAdjacentElement("afterbegin", input);
+// input.addEventListener('change', () => {
+// b = input.checked;
+// console.log(b);
+// });
